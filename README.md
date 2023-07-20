@@ -21,7 +21,7 @@ article
 If you find these results useful, please cite the article mentioned above. If you
 use the implementations provided here, please **also** cite this repository as
 ```bibtex
-@misc{ranocha2023stepRepro,
+@misc{ranocha2023stabilityRepro,
   title={Reproducibility repository for
          "{S}tability of step size control based on a posteriori error estimates"},
   author={Ranocha, Hendrik and Giesselmann, Jan},
@@ -53,14 +53,23 @@ in this article were performed using Julia v1.9.2.
 
 First, you need to download this repository, e.g., by cloning it with `git`
 or by downloading an archive via the GitHub interface. Then, you need to start
-Julia in the `code` directory and follow the instructions described in the
-`README.md` file there.
+Julia in the `code` directory of this repository and follow the instructions
+described in the `README.md` file therein.
 
 
 ## Authors
 
 - [Hendrik Ranocha](https://ranocha.de) (University of Hamburg, Germany)
 - Jan Giesselmann (TU Darmstadt, Germany)
+
+
+## License
+
+The code in this repository is published under the MIT license, see the
+`LICENSE` file. Some parts of the implementation are inspired by corresponding
+code of [OrdinaryDiffEq.jl](https://github.com/SciML/OrdinaryDiffEq.jl)
+published also under the MIT license, see
+[their license file](https://github.com/SciML/OrdinaryDiffEq.jl/blob/780c94aa8944979d9dcbfb0e34c1f2554727a471/LICENSE.md).
 
 
 ## Disclaimer
