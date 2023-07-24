@@ -1,7 +1,7 @@
 # Stability of step size control based on a posteriori error estimates
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-success.svg)](https://opensource.org/licenses/MIT)
-[![DOI](https://zenodo.org/badge/DOI/TODO.svg)](https://doi.org/TODO)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.8177157.svg)](https://doi.org/10.5281/zenodo.8177157)
 
 This repository contains information and code to reproduce the results presented in the
 article
@@ -27,7 +27,7 @@ use the implementations provided here, please **also** cite this repository as
   author={Ranocha, Hendrik and Giesselmann, Jan},
   year={2023},
   howpublished={\url{https://github.com/ranocha/2023_RK_error_estimate}},
-  doi={TODO}
+  doi={10.5281/zenodo.8177157}
 }
 ```
 
