@@ -12,7 +12,7 @@ article
   year={2023},
   month={07},
   doi={TODO},
-  eprint={TODO},
+  eprint={2307.12677},
   eprinttype={arxiv},
   eprintclass={math.NA}
 }
