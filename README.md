@@ -11,7 +11,7 @@ article
   author={Ranocha, Hendrik and Giesselmann, Jan},
   year={2023},
   month={07},
-  doi={TODO},
+  doi={10.48550/arXiv.2307.12677},
   eprint={2307.12677},
   eprinttype={arxiv},
   eprintclass={math.NA}
