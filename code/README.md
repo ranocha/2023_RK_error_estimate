@@ -62,4 +62,4 @@ create the figures shown in the paper.
 This directory also contains two Mathematica notebooks -
 `step_size_control_with_L1.nb` and `step_size_control_with_L2.nb` -
 containing analytical derivations/verifications of material presented in
-the manuscript.
+the manuscript. These notebooks have been executed with Mathematica 12.1.
