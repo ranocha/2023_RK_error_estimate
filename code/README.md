@@ -46,9 +46,11 @@ julia> test(; alg = BS3(), estimate = :residual_cubic_l2, betas = (0.6, -0.2))
 
 julia> plot_krogh()
 
-julia> plot_rigidbody()
+julia> plot_rigidbody() # this can take a few minutes
 
-julia> plot_bbm() # # this can take a few minutes
+julia> plot_bbm() # this can take a few minutes
+
+julia> plot_one_sided_lipschitz() # this can take a few minutes
 
 julia> plot_linear_advection() # this can take several minutes with multiple threads
 

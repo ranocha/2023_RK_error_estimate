@@ -897,7 +897,7 @@ function solve_rigidbody(alg, betas, estimate, tol)
 end
 
 function plot_rigidbody(; estimate = :residual_cubic_l1)
-  tol = 10.0 .^ range(-9, -2, length = 15)
+  tol = 10.0 .^ range(-8, -2, length = 15)
   figdir = joinpath(dirname(@__DIR__), "figures")
   isdir(figdir) || mkdir(figdir)
 
@@ -920,29 +920,346 @@ function plot_rigidbody(; estimate = :residual_cubic_l1)
     error_embedded[i] = res.error_embedded
   end
 
+  # rescaling tol^( (p + 1) / p) with equality at 1.0e-2
+  # for EPUS vs. EPS control
+  tol_rescaled = @. tol^(4 / 3) * 1.0e-2 / 1.0e-2^(4 / 3)
+  accept_residual_rescaled = zero(tol)
+  reject_residual_rescaled = zero(tol)
+  error_residual_rescaled = zero(tol)
+  for i in eachindex(tol)
+    res = solve_rigidbody(alg, betas, estimate, tol_rescaled[i])
+    accept_residual_rescaled[i] = res.stats_residual.naccept
+    reject_residual_rescaled[i] = res.stats_residual.nreject
+    error_residual_rescaled[i] = res.error_residual
+  end
+
   fig = plot(xguide = "Number of steps", yguide = "Error")
   scatter!(fig, accept_residual + reject_residual, error_residual;
            label = "residual", marker = :x, plot_kwargs()...)
+  scatter!(fig, accept_residual_rescaled + reject_residual_rescaled, error_residual_rescaled;
+           label = "residual (rescaled)", marker = :circle,
+           markerstrokealpha = 1, plot_kwargs()...)
   scatter!(fig, accept_embedded + reject_embedded, error_embedded;
            label = "embedded", marker = :+, plot_kwargs()...)
-  plot!(fig, xscale = :log10, yscale = :log10)
+  plot!(fig, xscale = :log10, yscale = :log10,
+        foreground_color_legend = nothing, background_color_legend = nothing)
   savefig(joinpath(figdir, "rigidbody_bs3_work_precision_pi.pdf"))
 
   fig = plot(xguide = "Tolerance", yguide = "Error")
   scatter!(fig, tol, error_residual;
            label = "residual", marker = :x, plot_kwargs()...)
+  scatter!(fig, tol, error_residual_rescaled;
+           label = "residual (rescaled)", marker = :circle, plot_kwargs()...)
   scatter!(fig, tol, error_embedded;
            label = "embedded", marker = :+, plot_kwargs()...)
-  plot!(fig, xscale = :log10, yscale = :log10, legend = :topleft)
+  scaling = tol.^1.0
+  scaling .*= error_embedded[1] / scaling[1]
+  plot!(fig, tol, scaling; label = L"\propto \tau", color = "gray",
+        plot_kwargs()...)
+  scaling = tol.^0.75
+  scaling .*= error_residual[1] / scaling[1]
+  plot!(fig, tol, scaling; label = L"\propto \tau^{3/4}", color = "gray",
+        linestyle = :dot, plot_kwargs()...)
+  plot!(fig, xscale = :log10, yscale = :log10, legend = :topleft,
+        xticks = [1.0e-8, 1.0e-6, 1.0e-4, 1.0e-2],
+        foreground_color_legend = nothing, background_color_legend = nothing)
   savefig(joinpath(figdir, "rigidbody_bs3_error_vs_tol_pi.pdf"))
 
   fig = plot(xguide = "Tolerance", yguide = "Number of rejected steps")
   scatter!(fig, tol, reject_residual;
            label = "residual", marker = :x, plot_kwargs()...)
+  scatter!(fig, tol, reject_residual_rescaled;
+           label = "residual (rescaled)", marker = :circle, plot_kwargs()...)
   scatter!(fig, tol, reject_embedded;
            label = "embedded", marker = :+, plot_kwargs()...)
-  plot!(fig, xscale = :log10, legend = :topleft)
+  plot!(fig, xscale = :log10, legend = :topleft,
+        xticks = [1.0e-8, 1.0e-6, 1.0e-4, 1.0e-2],
+        foreground_color_legend = nothing, background_color_legend = nothing)
   savefig(joinpath(figdir, "rigidbody_bs3_rejsteps_vs_tol_pi.pdf"))
+
+  @info "Results saved in directory figdir" figdir
+  return nothing
+end
+
+
+################################################################################
+## (Non-)linear equation with one-sided Lipschitz condition
+
+function one_sided_lipschitz_linear!(du, u, p, t)
+  du[1] = u[1]
+  return nothing
+end
+
+function exact_solution(::typeof(one_sided_lipschitz_linear!),
+                        u0, p, t)
+  return @. exp(t) * u0
+end
+
+function setup_one_sided_lipschitz_linear()
+  u0 = [1.0]
+  tspan = (0.0, 1.0)
+  ode = ODEProblem(one_sided_lipschitz_linear!, u0, tspan)
+  return ode
+end
+
+function solve_one_sided_lipschitz_linear(alg, betas, estimate, tol)
+  ode = setup_one_sided_lipschitz_linear()
+
+  abstol = tol # absolute tolerance
+  reltol = tol # relative tolerance
+
+  # the algorithms from OrdinaryDiffEq.jl and their corresponding Butcher tableaux
+  if alg == BS3()
+    coefficients = (;
+      A = [0 0 0 0;
+          1/2 0 0 0;
+          0 3/4 0 0;
+          2/9 1/3 4/9 0],
+      b = [2/9, 1/3, 4/9, 0],
+      bembd = [7/24, 1/4, 1/3, 1/8],
+      c = [0, 1/2, 3/4, 1],
+      order_main = 3)
+  elseif  alg == Heun()
+    coefficients = (;
+      A = [0 0 0;
+          1 0 0;
+          1/2 1/2 0],
+      b = [1/2, 1/2, 0],
+      bembd = [1.0, 0, 0],
+      c = [0.0, 1, 1],
+      order_main = 2)
+  end
+
+  # initial time step size
+  dt, _ = ode_determine_initdt(
+    ode.u0, first(ode.tspan), abstol, reltol, ode, coefficients.order_main)
+
+  # Solve the ODE using the plain code below
+  sol_residual = ode_solve(ode, coefficients;
+                           dt, abstol, reltol,
+                           controller = PIDController(betas...),
+                           estimate)
+
+  error_residual = norm(sol_residual.u[end] -
+                        exact_solution(ode.f.f, ode.u0, ode.p, sol_residual.t[end]))
+
+  return (; stats_residual = sol_residual.stats,
+            error_residual)
+end
+
+
+function one_sided_lipschitz_nonlinear!(du, u, p, t)
+  du[1] = exp(-u[1])
+  return nothing
+end
+
+function exact_solution(::typeof(one_sided_lipschitz_nonlinear!),
+                        u0, p, t)
+  return @. log(t + exp(u0))
+end
+
+function setup_one_sided_lipschitz_nonlinear()
+  u0 = [1.0]
+  tspan = (0.0, 100.0)
+  ode = ODEProblem(one_sided_lipschitz_nonlinear!, u0, tspan)
+  return ode
+end
+
+function solve_one_sided_lipschitz_nonlinear(alg, betas, estimate, tol)
+  ode = setup_one_sided_lipschitz_nonlinear()
+
+  abstol = tol # absolute tolerance
+  reltol = tol # relative tolerance
+
+  # the algorithms from OrdinaryDiffEq.jl and their corresponding Butcher tableaux
+  if alg == BS3()
+    coefficients = (;
+      A = [0 0 0 0;
+          1/2 0 0 0;
+          0 3/4 0 0;
+          2/9 1/3 4/9 0],
+      b = [2/9, 1/3, 4/9, 0],
+      bembd = [7/24, 1/4, 1/3, 1/8],
+      c = [0, 1/2, 3/4, 1],
+      order_main = 3)
+  elseif  alg == Heun()
+    coefficients = (;
+      A = [0 0 0;
+          1 0 0;
+          1/2 1/2 0],
+      b = [1/2, 1/2, 0],
+      bembd = [1.0, 0, 0],
+      c = [0.0, 1, 1],
+      order_main = 2)
+  end
+
+  # initial time step size
+  dt, _ = ode_determine_initdt(
+    ode.u0, first(ode.tspan), abstol, reltol, ode, coefficients.order_main)
+
+  # Solve the ODE using the plain code below
+  sol_residual = ode_solve(ode, coefficients;
+                           dt, abstol, reltol,
+                           controller = PIDController(betas...),
+                           estimate)
+
+  error_residual = norm(sol_residual.u[end] -
+                        exact_solution(ode.f.f, ode.u0, ode.p, sol_residual.t[end]))
+
+  return (; stats_residual = sol_residual.stats,
+            error_residual)
+end
+
+
+function plot_one_sided_lipschitz()
+  figdir = joinpath(dirname(@__DIR__), "figures")
+  isdir(figdir) || mkdir(figdir)
+
+  let
+    tol = 10.0 .^ range(-7, -4, length = 15)
+
+    # Heun, PI controller
+    alg = Heun()
+    estimate = :residual_quadratic_l2
+    betas = (0.6, -0.2)
+    accept_residual = zero(tol)
+    reject_residual = zero(tol)
+    error_residual = zero(tol)
+    global_integral = zero(tol)
+    for i in eachindex(tol)
+      res = solve_one_sided_lipschitz_linear(alg, betas, estimate, tol[i])
+      accept_residual[i] = res.stats_residual.naccept
+      reject_residual[i] = res.stats_residual.nreject
+      error_residual[i] = res.error_residual
+      global_integral[i] = res.stats_residual.global_integral
+    end
+
+    # The one-sided Lipschitz constant of u -> u is 1,
+    # the final time is 1.
+    exponential_scaling = exp(1.0)
+    fig = plot(xguide = "Tolerance", yguide = "")
+    scatter!(fig, tol, error_residual;
+            label = "error", marker = :+, plot_kwargs()...)
+    scatter!(fig, tol, exponential_scaling * global_integral;
+            label = "estimate", marker = :x, plot_kwargs()...)
+    scaling = tol.^(2/3)
+    scaling .*= error_residual[1] / scaling[1]
+    plot!(fig, tol, scaling; label = L"\propto \tau^{2/3}", color = "gray",
+          linestyle = :dot, plot_kwargs()...)
+    plot!(fig, xscale = :log10, yscale = :log10, legend = :topleft,
+          xticks = [1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4],
+          foreground_color_legend = nothing, background_color_legend = nothing)
+    savefig(joinpath(figdir, "one_sided_lipschitz_linear_heun2_global_estimate.pdf"))
+  end
+
+  let
+    tol = 10.0 .^ range(-7, -4, length = 15)
+
+    # Heun, PI controller
+    alg = Heun()
+    estimate = :residual_quadratic_l2
+    betas = (0.6, -0.2)
+    accept_residual = zero(tol)
+    reject_residual = zero(tol)
+    error_residual = zero(tol)
+    global_integral = zero(tol)
+    for i in eachindex(tol)
+      res = solve_one_sided_lipschitz_nonlinear(alg, betas, estimate, tol[i])
+      accept_residual[i] = res.stats_residual.naccept
+      reject_residual[i] = res.stats_residual.nreject
+      error_residual[i] = res.error_residual
+      global_integral[i] = res.stats_residual.global_integral
+    end
+
+    # The one-sided Lipschitz constant of u -> exp(-u) is 0.
+    exponential_scaling = 1.0
+    fig = plot(xguide = "Tolerance", yguide = "")
+    scatter!(fig, tol, error_residual;
+            label = "error", marker = :+, plot_kwargs()...)
+    scatter!(fig, tol, exponential_scaling * global_integral;
+            label = "estimate", marker = :x, plot_kwargs()...)
+    scaling = tol.^(2/3)
+    scaling .*= error_residual[1] / scaling[1]
+    plot!(fig, tol, scaling; label = L"\propto \tau^{2/3}", color = "gray",
+          linestyle = :dot, plot_kwargs()...)
+    plot!(fig, xscale = :log10, yscale = :log10, legend = :topleft,
+          xticks = [1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4],
+          foreground_color_legend = nothing, background_color_legend = nothing)
+    savefig(joinpath(figdir, "one_sided_lipschitz_nonlinear_heun2_global_estimate.pdf"))
+  end
+
+  let
+    tol = 10.0 .^ range(-9, -4, length = 15)
+
+    # Heun, PI controller
+    alg = Heun()
+    estimate = :residual_cubic_l2
+    betas = (0.6, -0.2)
+    accept_residual = zero(tol)
+    reject_residual = zero(tol)
+    error_residual = zero(tol)
+    global_integral = zero(tol)
+    for i in eachindex(tol)
+      res = solve_one_sided_lipschitz_linear(alg, betas, estimate, tol[i])
+      accept_residual[i] = res.stats_residual.naccept
+      reject_residual[i] = res.stats_residual.nreject
+      error_residual[i] = res.error_residual
+      global_integral[i] = res.stats_residual.global_integral
+    end
+
+    # The one-sided Lipschitz constant of u -> u is 1,
+    # the final time is 1.
+    exponential_scaling = exp(1.0)
+    fig = plot(xguide = "Tolerance", yguide = "")
+    scatter!(fig, tol, error_residual;
+            label = "error", marker = :+, plot_kwargs()...)
+    scatter!(fig, tol, exponential_scaling * global_integral;
+            label = "estimate", marker = :x, plot_kwargs()...)
+    scaling = tol.^0.75
+    scaling .*= error_residual[1] / scaling[1]
+    plot!(fig, tol, scaling; label = L"\propto \tau^{3/4}", color = "gray",
+          linestyle = :dot, plot_kwargs()...)
+    plot!(fig, xscale = :log10, yscale = :log10, legend = :topleft,
+          xticks = [1.0e-9, 1.0e-8, 1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4],
+          foreground_color_legend = nothing, background_color_legend = nothing)
+    savefig(joinpath(figdir, "one_sided_lipschitz_linear_bs3_global_estimate.pdf"))
+  end
+
+  let
+    tol = 10.0 .^ range(-9, -4, length = 15)
+
+    # BS3, PI controller
+    alg = BS3()
+    estimate = :residual_cubic_l2
+    betas = (0.6, -0.2)
+    accept_residual = zero(tol)
+    reject_residual = zero(tol)
+    error_residual = zero(tol)
+    global_integral = zero(tol)
+    for i in eachindex(tol)
+      res = solve_one_sided_lipschitz_nonlinear(alg, betas, estimate, tol[i])
+      accept_residual[i] = res.stats_residual.naccept
+      reject_residual[i] = res.stats_residual.nreject
+      error_residual[i] = res.error_residual
+      global_integral[i] = res.stats_residual.global_integral
+    end
+
+    # The one-sided Lipschitz constant of u -> exp(-u) is 0.
+    exponential_scaling = 1.0
+    fig = plot(xguide = "Tolerance", yguide = "")
+    scatter!(fig, tol, error_residual;
+            label = "error", marker = :+, plot_kwargs()...)
+    scatter!(fig, tol, exponential_scaling * global_integral;
+            label = "estimate", marker = :x, plot_kwargs()...)
+    scaling = tol.^0.75
+    scaling .*= error_residual[1] / scaling[1]
+    plot!(fig, tol, scaling; label = L"\propto \tau^{3/4}", color = "gray",
+          linestyle = :dot, plot_kwargs()...)
+    plot!(fig, xscale = :log10, yscale = :log10, legend = :topleft,
+          xticks = [1.0e-9, 1.0e-8, 1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4],
+          foreground_color_legend = nothing, background_color_legend = nothing)
+    savefig(joinpath(figdir, "one_sided_lipschitz_nonlinear_bs3_global_estimate.pdf"))
+  end
 
   @info "Results saved in directory figdir" figdir
   return nothing
@@ -1110,12 +1427,23 @@ function plot_bbm(; estimate = :residual_cubic_l1)
     reject_embedded[i] = res.sol_embedded.stats.nreject
     errors_embedded[i] = res.error_embedded
   end
+
   fig = plot(xguide = "Tolerance", yguide = L"$L^2$ error")
   scatter!(fig, tolerances, errors_residual;
            label = "residual", marker = :x, plot_kwargs()...)
   scatter!(fig, tolerances, errors_embedded;
            label = "embedded", marker = :+, plot_kwargs()...)
-  plot!(fig, xscale = :log10, yscale = :log10, legend = :topleft)
+  scaling = tolerances.^1.0
+  scaling .*= errors_embedded[end] / scaling[end]
+  plot!(fig, tolerances[(end÷2):end], scaling[(end÷2):end];
+        label = L"\propto \tau", color = "gray",
+        plot_kwargs()...)
+  scaling = tolerances.^0.75
+  scaling .*= errors_residual[end] / scaling[end]
+  plot!(fig, tolerances, scaling; label = L"\propto \tau^{3/4}", color = "gray",
+        linestyle = :dot, plot_kwargs()...)
+  plot!(fig, xscale = :log10, yscale = :log10, legend = :topleft,
+        foreground_color_legend = nothing, background_color_legend = nothing)
   savefig(fig, joinpath(figdir, "bbm_error_vs_tol__BS3_cubicL1.pdf"))
 
   fig = plot(xguide = "Tolerance", yguide = "Number of rejected steps")
@@ -1123,7 +1451,8 @@ function plot_bbm(; estimate = :residual_cubic_l1)
            label = "residual", marker = :x, plot_kwargs()...)
   scatter!(fig, tolerances, reject_embedded;
            label = "embedded", marker = :+, plot_kwargs()...)
-  plot!(fig, xscale = :log10, legend = :topleft)
+  plot!(fig, xscale = :log10, legend = :topleft,
+        foreground_color_legend = nothing, background_color_legend = nothing)
   savefig(fig, joinpath(figdir, "bbm_rejsteps_vs_tol__BS3_cubicL1__NOT_USED.pdf"))
 
   fig = plot(xguide = "Number of steps", yguide = L"$L^2$ error")
@@ -1131,7 +1460,8 @@ function plot_bbm(; estimate = :residual_cubic_l1)
            label = "residual", marker = :x, plot_kwargs()...)
   scatter!(fig, accept_embedded + reject_embedded, errors_embedded;
            label = "embedded", marker = :+, plot_kwargs()...)
-  plot!(fig, xscale = :log10, yscale = :log10, legend = :topright)
+  plot!(fig, xscale = :log10, yscale = :log10, legend = :topright,
+        foreground_color_legend = nothing, background_color_legend = nothing)
   savefig(fig, joinpath(figdir, "bbm_work_precision__BS3_cubicL1.pdf"))
 
   @info "Results saved in directory figdir" figdir
@@ -1452,6 +1782,7 @@ mutable struct Integrator{uType, tType, Prob, RealT, Controller}
   controller::Controller
   estimate::Symbol
   estimate_tolerance::RealT
+  global_integral::RealT
   save_everystep::Bool
   naccept::Int
   nreject::Int
@@ -1491,7 +1822,7 @@ function ode_solve(prob::ODEProblem, coefficients;
   integrator = Integrator(t, dt, u, uembd, uprev, utmp, ktmp, prob,
                           A, b, bembd, c, order_for_control,
                           abstol, reltol, controller,
-                          estimate, estimate_tolerance,
+                          estimate, estimate_tolerance, zero(estimate_tolerance),
                           save_everystep,
                           naccept, nreject, nf)
 
@@ -1502,7 +1833,8 @@ function ode_solve(prob::ODEProblem, coefficients;
 
   stats = (; naccept = integrator.naccept,
              nreject = integrator.nreject,
-             nf = integrator.nf)
+             nf = integrator.nf,
+             global_integral = integrator.global_integral)
 
   return (; sol..., stats)
 end
@@ -1511,10 +1843,12 @@ function solve!(integrator::Integrator, sol)
   (; u, uprev, uembd, utmp, ktmp,
      A, b, bembd, c, order_for_control,
      abstol, reltol, controller,
-     estimate, estimate_tolerance, save_everystep) = integrator
+     estimate, estimate_tolerance,
+     save_everystep) = integrator
   f! = integrator.prob.f.f
   params = integrator.prob.p
   tend = last(integrator.prob.tspan)
+  local_integral = zero(integrator.global_integral)
 
   # solve until we have reached the final time
   while integrator.t < tend
@@ -1537,16 +1871,6 @@ function solve!(integrator::Integrator, sol)
     for i in eachindex(b)
       @. u     = u     + (b[i]     * integrator.dt) * ktmp[i]
       @. uembd = uembd + (bembd[i] * integrator.dt) * ktmp[i]
-    end
-
-    # check whether we are finished
-    if integrator.t + integrator.dt ≈ tend
-      integrator.t += integrator.dt
-      integrator.naccept += 1
-      copy!(uprev, u)
-      push!(sol.u, copy(u))
-      push!(sol.t, integrator.t)
-      break
     end
 
     # compute error estimate
@@ -1580,6 +1904,7 @@ function solve!(integrator::Integrator, sol)
           return @fastmath norm(du_interpolated)
         end
 
+        local_integral = integral
         integral / (abstol + reltol * max(norm(u0), norm(u1)))
       end
     elseif estimate === :residual_cubic_l1
@@ -1612,6 +1937,7 @@ function solve!(integrator::Integrator, sol)
           return @fastmath norm(du_interpolated)
         end
 
+        local_integral = integral
         integral / (abstol + reltol * max(norm(u0), norm(u1)))
       end
     elseif estimate === :residual_quadratic_l2
@@ -1642,6 +1968,7 @@ function solve!(integrator::Integrator, sol)
           return @fastmath norm(du_interpolated)^2
         end
 
+        local_integral = integral
         sqrt(dt * integral) / (abstol + reltol * max(norm(u0), norm(u1)))
       end
     elseif estimate === :residual_cubic_l2
@@ -1674,8 +2001,25 @@ function solve!(integrator::Integrator, sol)
           return @fastmath norm(du_interpolated)^2
         end
 
+        local_integral = integral
         sqrt(dt * integral) / (abstol + reltol * max(norm(u0), norm(u1)))
       end
+    end
+
+    # check whether we are finished
+    if integrator.t + integrator.dt ≈ tend
+      integrator.t += integrator.dt
+      integrator.naccept += 1
+      copy!(uprev, u)
+      push!(sol.u, copy(u))
+      push!(sol.t, integrator.t)
+
+      integrator.global_integral += local_integral
+      if estimate === :residual_quadratic_l2 || estimate === :residual_cubic_l2
+        T = sol.t[end] - sol.t[begin]
+        integrator.global_integral = sqrt(T * integrator.global_integral)
+      end
+      break
     end
 
     # adapt `dt`
@@ -1691,6 +2035,7 @@ function solve!(integrator::Integrator, sol)
         push!(sol.u, copy(u))
       end
       push!(sol.t, integrator.t)
+      integrator.global_integral += local_integral
     else
       reject_step!(controller)
       integrator.nreject += 1
